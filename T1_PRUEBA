@@ -1,0 +1,173 @@
+#include <SoftwareSerial.h>
+#define DEBUG(a) Serial.println(a);
+#include <TinyGPS.h> 
+#include "DHT.h"
+
+SoftwareSerial ss(4, 3);       //4Rx, 3Tx
+SoftwareSerial licor(10, 11);  //10 RX, 11 TX.
+TinyGPS gps;
+
+const byte Obj_DHT22 = 2;  //El pin2 lee el valor del sensor DHT22
+#define DHTPIN Obj_DHT22   // Indica el pin que se utilizara para la lectura #define DHTTYPE DHT22
+#define DHTTYPE DHT22
+
+DHT Obj_DHT(DHTPIN, DHTTYPE);
+int periodo = 10000;
+unsigned long TiempoAhora = 0;
+
+byte rele = 7;
+float hmd = 0;  //Guarda el valor de la humedad
+float tmp = 0;  //Guarda el valor de la Temperatura
+
+String StrDataResp = "";
+boolean StringCompleta = false;
+boolean bandera = false;
+char VarChar, CharPrimer = ' ';
+String StrDatIn = "";
+
+void setup() {
+  // put your setup code here, to run once:
+  Serial.begin(9600);
+  IniciarPines();
+  Obj_DHT.begin();
+  while (!Serial) { ; }
+  licor.begin(9600);
+  ss.begin(9600);
+  Serial.println("Iniciando Control ...");
+}
+void loop() {
+  if (StringCompleta) {
+    delay(5);
+    CharPrimer = StrDatIn.charAt(0);
+
+    StrDatIn.replace(" ", "");
+    StrDatIn.replace("F", "");
+    StrDatIn.replace("G", "");
+    StrDatIn.replace("H", "");
+    StrDatIn.replace("#", "");
+
+    if (CharPrimer == 'G') {
+      delay(500);
+      if (bandera == false) {
+        bandera = true;
+        digitalWrite(rele, LOW);
+        StrDataResp = "0,Bomba ON,0,0,0,0,0,0#\n";
+        //co2,rele,lat,lon,sat,pre,temp,humd#} }
+        else {
+          digitalWrite(rele, LOW);
+          StrDataResp = "0,Bomba ON,0,0,0,0,0,0#\n";
+          //co2,rele,lat,lon,sat,pre,temp,humd#}
+        }
+      }
+      if (CharPrimer == 'H') {
+        bandera = false;
+        digitalWrite(rele, HIGH);
+        StrDataResp = "0,Bomba OFF,0,0,0,0,0,0#\n";
+      }
+      delay(5);
+      if (CharPrimer == 'F') {
+        bandera = true;  //Para dejar de tomar la temperatura y humedad
+        Serial.println("Temperatura & Humedad OFF");
+        delay(1000);
+      }
+      if (CharPrimer == 'P') {
+        ss.listen();
+        geolocalizador();
+        delay(250);
+      }
+      Serial.print(StrDataResp);
+      while (Serial.available() > 0) { Serial.read(); }
+      Serial.flush();
+
+      delay(1000);
+      StrDataResp = "";
+      VarChar = ' ';
+      StringCompleta = false;
+      StrDatIn = "";
+    }
+
+    if (bandera == false) {
+      if (millis() > TiempoAhora + periodo) {
+        TiempoAhora = millis();
+        for (int i = 0; i <= 1; i++) {
+          LeerHumd_Temp();
+          delay(1000);
+        }
+      }
+    }
+    licor.listen();
+    Licor();
+  }
+
+  void serialEvent() {
+    while (Serial.available()) {
+      VarChar = (char)Serial.read();
+      StrDatIn += VarChar;
+      if (VarChar == '#') { StringCompleta = true; }
+    }
+  }
+  void IniciarPines(void) {
+    pinMode(rele, OUTPUT);
+    digitalWrite(rele, HIGH);
+  }
+  void Licor(void) {
+    if (licor.available()) {
+      String data = licor.readStringUntil('\n') + ",0,0,0,0,0,0,0#";
+      DEBUG(data);
+    }
+  }
+  void geolocalizador(void) {
+    bool newData = false;
+    unsigned long chars;
+    unsigned short sentences, failed;
+
+    // Intentar recibir secuencia durante un segundo
+    for (unsigned long start = millis();
+         millis() - start < 1000;) {
+      while (ss.available()) {
+        char c = ss.read();
+        if (gps.encode(c))
+          // Nueva secuencia recibida
+          newData = true;
+      }
+    }
+    if (newData) {
+      float flat, flon;
+      unsigned long age;
+      gps.f_get_position(&flat, &flon, &age);
+      Serial.print("0,0,");
+      Serial.print(" LAT=");
+      Serial.print(flat == TinyGPS::GPS_INVALID_F_ANGLE ? 0.0 : flat, 6);
+      Serial.print(",");
+      Serial.print(" LON=");
+      Serial.print(flon == TinyGPS::GPS_INVALID_F_ANGLE ? 0.0 : flon, 6);
+      Serial.print(",");
+      Serial.print(" SAT=");
+      Serial.print(gps.satellites() == TinyGPS::GPS_INVALID_SATELLITES ? 0 : gps.satellites());
+      Serial.print(",");
+      Serial.print(" PREC=");
+      Serial.print(gps.hdop() == TinyGPS::GPS_INVALID_HDOP ? 0 : gps.hdop());
+      Serial.print(",0,0#\n");
+    }
+    gps.stats(&chars, &sentences, &failed); /*Serial.print(" CHARS="); Serial.print(chars); Serial.print(" SENTENCES="); Serial.print(sentences); Serial.print(" CSUM ERR="); Serial.println(failed);*/
+  }
+  void LeerHumd_Temp(void) {
+    hmd = Obj_DHT.readHumidity();  //Lee la humedad
+    tmp = Obj_DHT.readTemperature();
+    //Lee la temperatura en grados centigrados (Valor por defecto)
+    // verifica si alguna lectura ha fallado
+    if (isnan(hmd) || isnan(tmp)) {
+      Serial.println("Existe un error en la lectura del sensor DHT22!");
+      hmd = 0;
+      tmp = 0;
+    }
+    Serial.print("0,0,0,0,0,0,");
+    Serial.print(tmp, 2);
+    Serial.print(",");
+    Serial.print(hmd, 2);
+    Serial.print("#\n");
+    while (Serial.available() > 0) {
+      Serial.read();
+    }
+    Serial.flush();
+  }
